@@ -1,0 +1,5 @@
+ARG_ENABLE("decorators", "enable decorators support", "no");
+
+if (PHP_DECORATORS != "no") {
+	EXTENSION("decorators", "decorators.c");
+}

@@ -128,7 +128,7 @@ void preprocessor(zval *source_zv, zval *return_value)
         STAGE_DECOR_READ_FUNCTION_PARAMS,   // разбор аргументов модифицируемой функции
         STAGE_DECOR_AWAIT_BODY_START,       // после аргументов вызова ожидаю начало тела функции "{"
         STAGE_DECOR_AWAIT_BODY_END          // после начала тела функции ожидаю ее конца "}"
-    } stage = STAGE_DECOR_OUTSIDE;          // состояния ДКА. вначале мы заведомо вне декораторов
+    } stage = STAGE_DECOR_OUTSIDE;          // состояния ДКА. в начале мы заведомо вне декораторов
 
     smart_str   result            = {0},    // строка с результирующим PHP кодом
                 decor_name        = {0},    // имя текущего декоратора (имя вызываемой функции)
