@@ -39,7 +39,7 @@ zend_module_entry decorators_module_entry = {
     PHP_RSHUTDOWN(decorators),
     PHP_MINFO(decorators),
 #if ZEND_MODULE_API_NO >= 20010901
-    "0.0.2",
+    "0.0.3",
 #endif
     STANDARD_MODULE_PROPERTIES
 };
@@ -451,8 +451,10 @@ void preprocessor(zval *source_zv, zval *return_value TSRMLS_DC)
 
     RETVAL_STRINGL(result.c, result.len, 1);
     smart_str_free(&result);
-} /* }}} */
+}
+/* }}} */
 
+/* {{{ DECORS_CALL_PREPROCESS */
 #define DECORS_CALL_PREPROCESS(result_zv, buf, len, duplicate) \
     do {                                                       \
         zval *source_zv;                                       \
@@ -463,9 +465,11 @@ void preprocessor(zval *source_zv, zval *return_value TSRMLS_DC)
         zval_dtor(source_zv);                                  \
         FREE_ZVAL(source_zv);                                  \
     } while (0);                                               \
+/* }}} */
 
 /* {{{ proto string decorators_preprocessor(string $code)
-   Performs code pre-processing by replacing decorators on plain PHP */
+   Performs code pre-processing by replacing decorators on plain PHP code
+*/
 PHP_FUNCTION(decorators_preprocessor)
 {
     char *source;
@@ -483,7 +487,7 @@ PHP_FUNCTION(decorators_preprocessor)
 
     zend_set_compiled_filename(filename TSRMLS_CC);
 
-    RETVAL_ZVAL(result, 0, 0);
+    RETVAL_ZVAL(result, 0, 1);
 }
 /* }}} */
 
