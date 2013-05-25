@@ -259,7 +259,6 @@ void preprocessor(zval *source_zv, zval *return_value TSRMLS_DC)
                     ++decor_offs;
                 }
                 if (fail_break) {
-                    DECORS_FREE_TOKEN_ZV
                     break;
                 }
                 smart_str_appendc(&all_decors_params, DECORS_PARAMS_DELIM);
