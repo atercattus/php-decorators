@@ -377,7 +377,7 @@ void preprocessor(zval *source_zv, zval *return_value TSRMLS_DC)
                                 @bar
                                 @spam(B, C)
                                 =>
-                                'A||A, B|'
+                                'A||B, C|'
                                 =>
                                 foo(bar(spam(X, B, C)), A)
                             1)
