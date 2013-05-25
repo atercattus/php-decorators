@@ -39,7 +39,7 @@ zend_module_entry decorators_module_entry = {
     PHP_RSHUTDOWN(decorators),
     PHP_MINFO(decorators),
 #if ZEND_MODULE_API_NO >= 20010901
-    "0.0.1",
+    "0.0.2",
 #endif
     STANDARD_MODULE_PROPERTIES
 };
@@ -99,30 +99,51 @@ PHP_RSHUTDOWN_FUNCTION(decorators)
         ZVAL_NULL(&token_zv);                                 \
     } while (0);                                              \
 
-#define DECORS_THROW_ERROR(s)                               \
-    do {                                                    \
-        zend_throw_exception(NULL, (s), E_PARSE TSRMLS_CC); \
-        DECORS_FREE_TOKEN_ZV                                \
-    } while (0);                                            \
+#define DECORS_THROW_ERROR(s)         \
+    do {                              \
+        zend_error(E_PARSE, "%s", s); \
+        DECORS_FREE_TOKEN_ZV          \
+        smart_str_free(&result);      \
+    } while (0);                      \
 
-/* {{{ preprocessor(zval *source_zv, zval *return_value)
- */
-void preprocessor(zval *source_zv, zval *return_value)
+#define DECORS_THROW_ERROR_WRONG_SYNTAX {DECORS_THROW_ERROR("wrong decorator syntax");}
+#define DECORS_THROW_ERROR_MISMATCH_BRACKETS {DECORS_THROW_ERROR("mismatch paired brackets");}
+
+/* {{{ static inline char* check_for_decor_comment(char *text, unsigned int len)
+    Проверка, что текст похож на описание декоратора (регулярка ^#[ \t]*@)
+    Если похож - возвращает адрес '@', а если не похож - NULL.
+*/
+static inline char* check_for_decor_comment(char *text, unsigned int len)
+{
+    if ((len<3) || ('#' != *text)) {
+        return NULL;
+    }
+
+    unsigned int i;
+    for (i=1; i<len; ++i) {
+        if ('@' == text[i]) {
+            return &(text[i]);
+        }
+        else if ((' ' != text[i]) && ('\t' != text[i])) {
+            return NULL;
+        }
+    }
+    return NULL;
+}
+/* }}} */
+
+/* {{{ preprocessor
+*/
+void preprocessor(zval *source_zv, zval *return_value TSRMLS_DC)
 {
     zend_lex_state  lexical_state_save;
     zval            token_zv;               // значение текущего токена
     zend_bool       token_zv_free;          // 1 - после работы с token_zv необходимо освободить занимаемую им память
     int             token_type;             // тип текущего токена (T_* или char с самим символом)
-    int             prev_token_type;        // тип предыдущего токена (T_* или char с самим символом)
-    zend_bool       token_write_through;    // 1 - выводить текущий токен в результирующий код
-    zend_bool       prev_token_ws_nl;       // 1 - предыдущий токен был типа T_WHITESPACE и содержал в себе \n
     int             parenth_nest_lvl;       // уровень вложенности парных скобок
 
     enum {
         STAGE_DECOR_OUTSIDE,                // вне описания декораторов и функций, ими модифицируемых
-        STAGE_DECOR_NAME,                   // разбор имени декоратора (вызываемой функции)
-        STAGE_DECOR_AWAIT_PARAMS,           // после имени декоратора ожидаю его аргументы
-        STAGE_DECOR_READ_PARAMS,            // разбор аргументов декоратора
         STAGE_DECOR_AWAIT_FUNCTION,         // после описания декоратора ожидаю "function NAME"
         STAGE_DECOR_AWAIT_FUNCTION_PARAMS,  // после имени модифицируемой функции ожидаю ее аргументы
         STAGE_DECOR_READ_FUNCTION_PARAMS,   // разбор аргументов модифицируемой функции
@@ -145,7 +166,12 @@ void preprocessor(zval *source_zv, zval *return_value)
 
     zend_save_lexical_state(&lexical_state_save TSRMLS_CC);
 
-    if (zend_prepare_string_for_scanning(source_zv, "" TSRMLS_CC) == FAILURE) {
+    zend_bool original_in_compilation = CG(in_compilation);
+    CG(in_compilation) = 1;
+
+    // Zend падает в корку, если получает NULL в качестве имени
+    char *filename = zend_get_compiled_filename(TSRMLS_CC) ? zend_get_compiled_filename(TSRMLS_CC) : "";
+    if (zend_prepare_string_for_scanning(source_zv, filename TSRMLS_CC) == FAILURE) {
         zend_restore_lexical_state(&lexical_state_save TSRMLS_CC);
         RETURN_FALSE;
     }
@@ -153,13 +179,8 @@ void preprocessor(zval *source_zv, zval *return_value)
     //LANG_SCNG(yy_state) = yycINITIAL;
     LANG_SCNG(yy_state) = yycST_IN_SCRIPTING;
 
-    prev_token_ws_nl = 0;
-    prev_token_type = 0;
-
     ZVAL_NULL(&token_zv);
     while (token_type = lex_scan(&token_zv TSRMLS_CC)) {
-        token_write_through = 1;
-
         token_zv_free = 1;
         switch (token_type) {
             case T_CLOSE_TAG:
@@ -174,156 +195,90 @@ void preprocessor(zval *source_zv, zval *return_value)
                 token_zv_free = 0;
         }
 
-        if (T_COMMENT == token_type) {
-            prev_token_ws_nl = 1;
-        }
+        if ((T_COMMENT == token_type) && ((STAGE_DECOR_OUTSIDE == stage) || (STAGE_DECOR_AWAIT_FUNCTION == stage))) {
+            char* decor_offs = check_for_decor_comment(zendtext, zendleng);
+            if (decor_offs) { // найден комментарий, оформленный как декоратор
+                smart_str_appendc(&result, '\n');
 
-        if ('@' == token_type) {
-            token_write_through = 0;
+                char *end = zendtext+zendleng-1;
+                char *d_name = NULL;
 
-            if ((STAGE_DECOR_OUTSIDE == stage) || (STAGE_DECOR_AWAIT_FUNCTION == stage)) {
-                /*
-                    '@' должен идти в начале строки (не считая пробельных символов) или после однострочного комментария:
-
-                    @foo
-                    // comment
-                    @bar
-                */
-                if (prev_token_ws_nl || (T_COMMENT == prev_token_type)) {
-                    stage = STAGE_DECOR_NAME;
-                    DECORS_FREE_TOKEN_ZV
-
-                    prev_token_type = token_type;
-
-                    continue; // следующая итерация while(token_type = lex_scan)
-                }
-                else {
-                    // syntax error: @ указан не в начале строки (перед ним допустимы только пробельные символы)
-                    DECORS_THROW_ERROR("Only \\s characters accepts before @ char");
-                    break;
-                }
-            }
-            else {
-                // syntax error: повторный @ внутри описания декоратора
-                DECORS_THROW_ERROR("Unexpected @");
-                break;
-            }
-        }
-
-        prev_token_ws_nl = 0;
-
-        if (STAGE_DECOR_OUTSIDE == stage) {
-            if (T_WHITESPACE == token_type) {
-                prev_token_ws_nl = (NULL != memchr(zendtext, '\n', zendleng));
-            }
-        }
-        else if (STAGE_DECOR_NAME == stage) {
-            token_write_through = 0;
-
-            if ((T_STRING == token_type) || (T_PAAMAYIM_NEKUDOTAYIM == token_type)) {
-                // все, что указано в качестве имени декоратора, сохраняю в строку
-                smart_str_appendl(&decor_name, zendtext, zendleng);
-            }
-            else if (T_WHITESPACE == token_type) {
-                prev_token_ws_nl = (NULL != memchr(zendtext, '\n', zendleng));
-                if (prev_token_ws_nl) {
-                    stage = STAGE_DECOR_AWAIT_FUNCTION;
-                    token_write_through = 1;
-
-                    // параметров декоратора нет - вставляю пустой блок
-                    smart_str_appendc(&all_decors_params, DECORS_PARAMS_DELIM);
-                }
-                else {
-                    stage = STAGE_DECOR_AWAIT_PARAMS;
-                }
-            }
-            else {
-                if ('(' == token_type) {
-                    stage = STAGE_DECOR_READ_PARAMS;
-                    parenth_nest_lvl = 1;
-                }
-                else {
-                    // syntax error: после имени декоратора идет не пойми что
-                    DECORS_THROW_ERROR("Wrong decorator syntax");
-                    break;
-                }
-            }
-
-            // если имя декоратора закончилось - сохраняю все накопившееся
-            if (STAGE_DECOR_NAME != stage) {
-                smart_str_appendc(&decor_name, '(');
-            }
-        }
-        else if (STAGE_DECOR_AWAIT_PARAMS == stage) {
-            token_write_through = 0;
-
-            if ((T_COMMENT == token_type) || (T_DOC_COMMENT == token_type)) {
-                // спокойно относимся к комментариям
-                token_write_through = 1;
-            }
-            else if (T_WHITESPACE == token_type) {
-                prev_token_ws_nl = (NULL != memchr(zendtext, '\n', zendleng));
-                if (prev_token_ws_nl) {
-                    stage = STAGE_DECOR_AWAIT_FUNCTION;
-                    token_write_through = 1; // после имени декоратора идут пробельные символы. содержащие \n - вывожу их как есть
-
-                    // параметров декоратора нет - вставляю пустой блок
-                    smart_str_appendc(&all_decors_params, DECORS_PARAMS_DELIM);
-                }
-                // else // спокойно относимся к пробельным символам без начала новой строки
-            }
-            else if ('(' == token_type) {
-                stage = STAGE_DECOR_READ_PARAMS;
-                parenth_nest_lvl = 1;
-            }
-            else {
-                // syntax error: после имени декоратора идет какая-то фигня
-                DECORS_THROW_ERROR("Wrong decorator syntax");
-                break;
-            }
-        }
-        else if (STAGE_DECOR_READ_PARAMS == stage) {
-            token_write_through = 0;
-
-            if ('(' == token_type) {
-                ++parenth_nest_lvl;
-            }
-            else if (')' == token_type) {
-                if (!parenth_nest_lvl) {
-                    // syntax error: несогласованность парных скобок ( и )
-                    DECORS_THROW_ERROR("Mismatch paired brackets");
-                    break;
-                }
-                else {
-                    if (!--parenth_nest_lvl) {
-                        stage = STAGE_DECOR_AWAIT_FUNCTION;
+                ++decor_offs; // пропускаю '@', адрес которого возвращает check_for_decor_comment()
+                // поиск начала имени декоратора
+                while (decor_offs < end) {
+                    if ((' ' != *decor_offs) && ('\t' != *decor_offs)) {
+                        d_name = decor_offs;
+                        break;
                     }
+                    ++decor_offs;
                 }
-            }
 
-            // все, что указано в качестве параметров декоратора, сохраняю в строку
-            if (STAGE_DECOR_READ_PARAMS == stage) {
-                smart_str_appendl(&decor_params, zendtext, zendleng);
-            }
+                if (!d_name) {
+                    // syntax error: так и не было найдено имени декоратора после @
+                    DECORS_THROW_ERROR_WRONG_SYNTAX
+                    break;
+                }
 
-            // если параметры закончились - сохраняю все накопившееся
-            if (STAGE_DECOR_READ_PARAMS != stage) {
-                smart_str_append(&all_decors_params, &decor_params);
+                // выделение имени декоратора
+                while (decor_offs <= end) {
+                    if (   (' '  == *decor_offs)
+                        || ('\t' == *decor_offs)
+                        || ('('  == *decor_offs)
+                        || ('\n' == *decor_offs)
+                    ) {
+                        smart_str_appendl(&decor_name, d_name, decor_offs-d_name);
+                        smart_str_appendc(&decor_name, '(');
+                        break;
+                    }
+                    ++decor_offs;
+                }
+
+                // выделение параметров декоратора
+                zend_bool fail_break = 0;
+                while (decor_offs <= end) {
+                    if ((' ' == *decor_offs) || ('\t' == *decor_offs) || ('\n' == *decor_offs)) {
+                        // do nothing
+                    }
+                    else if ('(' == *decor_offs) {
+                        char *last = memrchr(zendtext, ')', zendleng);
+                        if (!last) {
+                            // syntax error: открывающая '(' без парной закрывающей ')'
+                            DECORS_THROW_ERROR_WRONG_SYNTAX
+                            fail_break = 1;
+                            break;
+                        }
+                        smart_str_appendl(&all_decors_params, decor_offs+1, last-decor_offs-1);
+                        break;
+                    }
+                    else {
+                        // syntax error: после имени декоратора идет непонятно что
+                        DECORS_THROW_ERROR_WRONG_SYNTAX
+                        fail_break = 1;
+                        break;
+                    }
+                    ++decor_offs;
+                }
+                if (fail_break) {
+                    DECORS_FREE_TOKEN_ZV
+                    break;
+                }
                 smart_str_appendc(&all_decors_params, DECORS_PARAMS_DELIM);
-                smart_str_free(&decor_params);
+
+                stage = STAGE_DECOR_AWAIT_FUNCTION;
+
+                DECORS_FREE_TOKEN_ZV
+                continue;
             }
         }
         else if (STAGE_DECOR_AWAIT_FUNCTION == stage) {
             switch (token_type) {
-                case T_WHITESPACE:
-                    prev_token_ws_nl = (NULL != memchr(zendtext, '\n', zendleng));
-                    // no break
                 case T_PUBLIC:
                 case T_PROTECTED:
                 case T_PRIVATE:
                 case T_FINAL:
                 case T_ABSTRACT:
                 case T_STATIC:
+                case T_WHITESPACE:
                 case T_COMMENT:
                 case T_DOC_COMMENT:
                     break; // допустимые токены между декоратором и "function <name>"
@@ -334,7 +289,7 @@ void preprocessor(zval *source_zv, zval *return_value)
 
                 default:
                     // syntax error: после декоратора должна начинаться функция/метод (с опциональными комментариями)
-                    DECORS_THROW_ERROR("Wrong decorator syntax");
+                    DECORS_THROW_ERROR_WRONG_SYNTAX
                     break;
             }
         }
@@ -348,7 +303,7 @@ void preprocessor(zval *source_zv, zval *return_value)
             }
             else {
                 // syntax error: ошибочный или неподдерживаемый синтаксис
-                DECORS_THROW_ERROR("Wrong decorator syntax");
+                DECORS_THROW_ERROR_WRONG_SYNTAX
                 break;
             }
         }
@@ -358,8 +313,8 @@ void preprocessor(zval *source_zv, zval *return_value)
             }
             else if (')' == token_type) {
                 if (!parenth_nest_lvl) {
-                    // syntax error: несогласованность парных скобок ( и )
-                    DECORS_THROW_ERROR("Mismatch paired brackets");
+                    // syntax error: несогласованность парных скобок '(' и ')'
+                    DECORS_THROW_ERROR_MISMATCH_BRACKETS
                     break;
                 }
                 else {
@@ -377,25 +332,23 @@ void preprocessor(zval *source_zv, zval *return_value)
                 // пропускаю как есть
             }
             else if ('{' == token_type) {
-                token_write_through = 0;
-
                 stage = STAGE_DECOR_AWAIT_BODY_END;
                 parenth_nest_lvl = 1;
 
                 // сцепление имен всех вызываемых декораторов для данной функции
-                // "{ return call_user_func_array(a(b(c(function(X) {"
+                // "{ return call_user_func_array(a(b(c(function(X) " + '{', которая будет выведена из zendtext
                 smart_str_appends(&result, "{ return call_user_func_array(");
                 smart_str_append(&result, &decor_name);
                 smart_str_appends(&result, "function(");
                 smart_str_append(&result, &func_args);
-                smart_str_appends(&result, ") { ");
+                smart_str_appends(&result, ") ");
 
                 smart_str_free(&decor_name);
                 smart_str_free(&func_args);
             }
             else {
                 // syntax error: ошибочный или неподдерживаемый синтаксис
-                DECORS_THROW_ERROR("Wrong decorator syntax");
+                DECORS_THROW_ERROR_WRONG_SYNTAX
                 break;
             }
         }
@@ -406,7 +359,7 @@ void preprocessor(zval *source_zv, zval *return_value)
             else if ('}' == token_type) {
                 if (!parenth_nest_lvl) {
                     // syntax error: несогласованность парных скобок { и }
-                    DECORS_THROW_ERROR("Mismatch paired brackets");
+                    DECORS_THROW_ERROR_MISMATCH_BRACKETS
                     break;
                 }
                 else {
@@ -414,11 +367,11 @@ void preprocessor(zval *source_zv, zval *return_value)
                         stage = STAGE_DECOR_OUTSIDE;
 
                         // "}, C)), A), func_get_args());}"
-                        smart_str_appends(&result, "}");
+                        smart_str_appendc(&result, '}');
 
                         /*
                             Перевод списка параметров декораторов текущей функции в php код.
-                            Список наполяется в обратном порядке, после каждой пачки параметров идет разделитель.
+                            Список наполняется в обратном порядке, после каждой пачки параметров идет разделитель.
                             Примеры при использовании '|' в качестве разделителя:
                             0)
                                 @foo(A)
@@ -460,7 +413,7 @@ void preprocessor(zval *source_zv, zval *return_value)
                                         smart_str_appends(&result, ", ");
                                         smart_str_appendl(&result, s+p+1, d);
                                     }
-                                    smart_str_appends(&result, ")");
+                                    smart_str_appendc(&result, ')');
                                     l = p;
                                 }
                                 else {
@@ -468,7 +421,7 @@ void preprocessor(zval *source_zv, zval *return_value)
                                         smart_str_appends(&result, ", ");
                                         smart_str_appendl(&result, s, l);
                                     }
-                                    smart_str_appends(&result, ")");
+                                    smart_str_appendc(&result, ')');
                                     break;
                                 }
                             }
@@ -483,14 +436,12 @@ void preprocessor(zval *source_zv, zval *return_value)
         }
         //else // внешний код, на который никак не влияют декораторы
 
-        prev_token_type = token_type;
-
-        if (token_write_through) {
-            smart_str_appendl(&result, zendtext, zendleng);
-        }
+        smart_str_appendl(&result, zendtext, zendleng);
 
         DECORS_FREE_TOKEN_ZV
     }
+
+    CG(in_compilation) = original_in_compilation;
 
     zend_restore_lexical_state(&lexical_state_save TSRMLS_CC);
 
@@ -509,13 +460,13 @@ void preprocessor(zval *source_zv, zval *return_value)
         ALLOC_INIT_ZVAL(result_zv);                            \
         ALLOC_INIT_ZVAL(source_zv);                            \
         ZVAL_STRINGL(source_zv, (buf), (len), (duplicate));    \
-        preprocessor(source_zv, result_zv);                    \
+        preprocessor(source_zv, result_zv TSRMLS_CC);          \
         zval_dtor(source_zv);                                  \
         FREE_ZVAL(source_zv);                                  \
     } while (0);                                               \
 
 /* {{{ proto string decorators_preprocessor(string $code)
-   comment */
+   Performs code pre-processing by replacing decorators on plain PHP */
 PHP_FUNCTION(decorators_preprocessor)
 {
     char *source;
@@ -526,15 +477,18 @@ PHP_FUNCTION(decorators_preprocessor)
         return;
     }
 
-    DECORS_CALL_PREPROCESS(result, source, source_len, 0);
+    char *filename = zend_get_compiled_filename(TSRMLS_CC) ? zend_get_compiled_filename(TSRMLS_CC) : "";
+    zend_set_compiled_filename("-" TSRMLS_CC);
+
+    DECORS_CALL_PREPROCESS(result, source, source_len, 1);
+
+    zend_set_compiled_filename(filename TSRMLS_CC);
 
     RETVAL_ZVAL(result, 0, 0);
 }
 /* }}} */
 
-/* {{{ decorators_zend_compile_string
-   comment */
-zend_op_array* decorators_zend_compile_string(zval *source_string, char *filename TSRMLS_DC)
+zend_op_array* decorators_zend_compile_string(zval *source_string, char *filename TSRMLS_DC) /* {{{ */
 {
     zval *result;
     DECORS_CALL_PREPROCESS(result, Z_STRVAL_P(source_string), Z_STRLEN_P(source_string), 1);
@@ -543,9 +497,7 @@ zend_op_array* decorators_zend_compile_string(zval *source_string, char *filenam
 }
 /* }}} */
 
-/* {{{ decorators_zend_compile_file
-   comment */
-zend_op_array* decorators_zend_compile_file(zend_file_handle *file_handle, int type TSRMLS_DC)
+zend_op_array* decorators_zend_compile_file(zend_file_handle *file_handle, int type TSRMLS_DC) /* {{{ */
 {
     char *buf;
     size_t size;
@@ -554,6 +506,9 @@ zend_op_array* decorators_zend_compile_file(zend_file_handle *file_handle, int t
         return NULL;
     }
     // теперь в file_handle у нас гарантированно ZEND_HANDLE_MAPPED
+
+    const char* file_path = (file_handle->opened_path) ? file_handle->opened_path : file_handle->filename;
+    zend_set_compiled_filename(file_path TSRMLS_CC);
 
     zval *result;
     DECORS_CALL_PREPROCESS(result, file_handle->handle.stream.mmap.buf, file_handle->handle.stream.mmap.len, 1);

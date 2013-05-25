@@ -24,8 +24,8 @@ function add($func, $v=0) {
     };
 }
 
-@Logger::log('calling b()')
-@add(41)
+# @Logger::log('calling b()')
+# @add(41)
 function b()
 {
     return 1;
