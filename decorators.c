@@ -444,6 +444,10 @@ void preprocessor(zval *source_zv, zval *return_value TSRMLS_DC)
 
     zend_restore_lexical_state(&lexical_state_save TSRMLS_CC);
 
+    if (decor_name.len) {
+        DECORS_THROW_ERROR("There is no function for the decorator");
+    }
+
     smart_str_free(&decor_name);
     smart_str_free(&decor_params);
     smart_str_free(&func_args);
