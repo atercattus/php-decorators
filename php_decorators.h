@@ -16,8 +16,8 @@ extern zend_module_entry decorators_module_entry;
 #include "TSRM.h"
 #endif
 
-PHP_RINIT_FUNCTION(decorators);
-PHP_RSHUTDOWN_FUNCTION(decorators);
+PHP_MINIT_FUNCTION(decorators);
+PHP_MSHUTDOWN_FUNCTION(decorators);
 PHP_MINFO_FUNCTION(decorators);
 
 PHP_FUNCTION(decorators_preprocessor);

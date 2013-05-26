@@ -14,8 +14,6 @@
 
 #define zendtext   LANG_SCNG(yy_text)
 #define zendleng   LANG_SCNG(yy_leng)
-#define zendcursor LANG_SCNG(yy_cursor)
-#define zendlimit  LANG_SCNG(yy_limit)
 
 /* {{{ decorators_functions[]
  */
@@ -33,10 +31,10 @@ zend_module_entry decorators_module_entry = {
 #endif
     "decorators",
     decorators_functions,
+    PHP_MINIT(decorators),
+    PHP_MSHUTDOWN(decorators),
     NULL,
     NULL,
-    PHP_RINIT(decorators),
-    PHP_RSHUTDOWN(decorators),
     PHP_MINFO(decorators),
 #if ZEND_MODULE_API_NO >= 20010901
     "0.0.3",
@@ -65,9 +63,9 @@ PHP_MINFO_FUNCTION(decorators)
 }
 /* }}} */
 
-/* {{{ PHP_RINIT_FUNCTION
+/* {{{ PHP_MINIT_FUNCTION
  */
-PHP_RINIT_FUNCTION(decorators)
+PHP_MINIT_FUNCTION(decorators)
 {
     decorators_orig_zend_compile_string = zend_compile_string;
     zend_compile_string                 = decorators_zend_compile_string;
@@ -79,9 +77,9 @@ PHP_RINIT_FUNCTION(decorators)
 }
 /* }}} */
 
-/* {{{ PHP_RSHUTDOWN_FUNCTION
+/* {{{ PHP_MSHUTDOWN_FUNCTION
  */
-PHP_RSHUTDOWN_FUNCTION(decorators)
+PHP_MSHUTDOWN_FUNCTION(decorators)
 {
     zend_compile_string = decorators_orig_zend_compile_string;
 
@@ -459,16 +457,16 @@ void preprocessor(zval *source_zv, zval *return_value TSRMLS_DC)
 /* }}} */
 
 /* {{{ DECORS_CALL_PREPROCESS */
-#define DECORS_CALL_PREPROCESS(result_zv, buf, len, duplicate) \
-    do {                                                       \
-        zval *source_zv;                                       \
-        ALLOC_INIT_ZVAL(result_zv);                            \
-        ALLOC_INIT_ZVAL(source_zv);                            \
-        ZVAL_STRINGL(source_zv, (buf), (len), (duplicate));    \
-        preprocessor(source_zv, result_zv TSRMLS_CC);          \
-        zval_dtor(source_zv);                                  \
-        FREE_ZVAL(source_zv);                                  \
-    } while (0);                                               \
+#define DECORS_CALL_PREPROCESS(result_zv, buf, len)   \
+    do {                                              \
+        zval *source_zv;                              \
+        ALLOC_INIT_ZVAL(result_zv);                   \
+        ALLOC_INIT_ZVAL(source_zv);                   \
+        ZVAL_STRINGL(source_zv, (buf), (len), 1);     \
+        preprocessor(source_zv, result_zv TSRMLS_CC); \
+        zval_dtor(source_zv);                         \
+        FREE_ZVAL(source_zv);                         \
+    } while (0);                                      \
 /* }}} */
 
 /* {{{ proto string decorators_preprocessor(string $code)
@@ -484,12 +482,12 @@ PHP_FUNCTION(decorators_preprocessor)
         return;
     }
 
-    char *filename = zend_get_compiled_filename(TSRMLS_CC) ? zend_get_compiled_filename(TSRMLS_CC) : "";
+    char *prev_filename = zend_get_compiled_filename(TSRMLS_CC) ? zend_get_compiled_filename(TSRMLS_CC) : "";
     zend_set_compiled_filename("-" TSRMLS_CC);
 
-    DECORS_CALL_PREPROCESS(result, source, source_len, 1);
+    DECORS_CALL_PREPROCESS(result, source, source_len);
 
-    zend_set_compiled_filename(filename TSRMLS_CC);
+    zend_set_compiled_filename(prev_filename TSRMLS_CC);
 
     RETVAL_ZVAL(result, 0, 1);
 }
@@ -498,7 +496,7 @@ PHP_FUNCTION(decorators_preprocessor)
 zend_op_array* decorators_zend_compile_string(zval *source_string, char *filename TSRMLS_DC) /* {{{ */
 {
     zval *result;
-    DECORS_CALL_PREPROCESS(result, Z_STRVAL_P(source_string), Z_STRLEN_P(source_string), 1);
+    DECORS_CALL_PREPROCESS(result, Z_STRVAL_P(source_string), Z_STRLEN_P(source_string));
 
     return decorators_orig_zend_compile_string(result, filename TSRMLS_CC);
 }
@@ -514,11 +512,14 @@ zend_op_array* decorators_zend_compile_file(zend_file_handle *file_handle, int t
     }
     // теперь в file_handle у нас гарантированно ZEND_HANDLE_MAPPED
 
-    const char* file_path = (file_handle->opened_path) ? file_handle->opened_path : file_handle->filename;
-    zend_set_compiled_filename(file_path TSRMLS_CC);
+    char *prev_filename = zend_get_compiled_filename(TSRMLS_CC) ? zend_get_compiled_filename(TSRMLS_CC) : "";
+    const char* filename = (file_handle->opened_path) ? file_handle->opened_path : file_handle->filename;
+    zend_set_compiled_filename(filename TSRMLS_CC);
 
     zval *result;
-    DECORS_CALL_PREPROCESS(result, file_handle->handle.stream.mmap.buf, file_handle->handle.stream.mmap.len, 1);
+    DECORS_CALL_PREPROCESS(result, file_handle->handle.stream.mmap.buf, file_handle->handle.stream.mmap.len);
+
+    zend_set_compiled_filename(prev_filename TSRMLS_CC);
 
     file_handle->handle.stream.mmap.buf = Z_STRVAL_P(result);
     file_handle->handle.stream.mmap.len = Z_STRLEN_P(result);
