@@ -10,4 +10,4 @@ before_script:
     - make
     - echo "extension = decorators.so" >> ~/.phpenv/versions/$(phpenv version-name)/etc/php.ini
 
-script: make test
+script: echo 'n'|make test
