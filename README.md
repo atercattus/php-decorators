@@ -1,6 +1,8 @@
 php-decorators
 ==============
 
+![travis-ci.org](https://travis-ci.org/AterCattus/php-decorators.png?branch=master)
+
 The implementation of decorators in PHP
 
 ###Usage example
