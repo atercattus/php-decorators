@@ -168,7 +168,7 @@ void preprocessor(zval *source_zv, zval *return_value TSRMLS_DC)
     CG(in_compilation) = 1;
 
     // Zend падает в корку, если получает NULL в качестве имени
-    char *filename = zend_get_compiled_filename(TSRMLS_CC) ? zend_get_compiled_filename(TSRMLS_CC) : "";
+    char *filename = zend_get_compiled_filename(TSRMLS_C) ? zend_get_compiled_filename(TSRMLS_C) : "";
     if (zend_prepare_string_for_scanning(source_zv, filename TSRMLS_CC) == FAILURE) {
         zend_restore_lexical_state(&lexical_state_save TSRMLS_CC);
         RETURN_FALSE;
@@ -238,7 +238,7 @@ void preprocessor(zval *source_zv, zval *return_value TSRMLS_DC)
                         // do nothing
                     }
                     else if ('(' == *decor_offs) {
-                        char *last = memrchr(zendtext, ')', zendleng);
+                        char *last = (char*)memrchr(zendtext, ')', zendleng);
                         if (!last) {
                             // syntax error: открывающая '(' без парной закрывающей ')'
                             DECORS_THROW_ERROR_WRONG_SYNTAX
@@ -402,7 +402,7 @@ void preprocessor(zval *source_zv, zval *return_value TSRMLS_DC)
                             char *s = all_decors_params.c;
                             int   l = all_decors_params.len-1;
                             while (1) {
-                                char *pp = memrchr(s, DECORS_PARAMS_DELIM, l);
+                                char *pp = (char*)memrchr(s, DECORS_PARAMS_DELIM, l);
                                 if (pp) {
                                     int p = pp-s;
                                     int d = l-(p+1);
@@ -482,7 +482,7 @@ PHP_FUNCTION(decorators_preprocessor)
         return;
     }
 
-    char *prev_filename = zend_get_compiled_filename(TSRMLS_CC) ? zend_get_compiled_filename(TSRMLS_CC) : "";
+    char *prev_filename = zend_get_compiled_filename(TSRMLS_C) ? zend_get_compiled_filename(TSRMLS_C) : "";
     zend_set_compiled_filename("-" TSRMLS_CC);
 
     DECORS_CALL_PREPROCESS(result, source, source_len);
@@ -512,7 +512,7 @@ zend_op_array* decorators_zend_compile_file(zend_file_handle *file_handle, int t
     }
     // теперь в file_handle у нас гарантированно ZEND_HANDLE_MAPPED
 
-    char *prev_filename = zend_get_compiled_filename(TSRMLS_CC) ? zend_get_compiled_filename(TSRMLS_CC) : "";
+    char *prev_filename = zend_get_compiled_filename(TSRMLS_C) ? zend_get_compiled_filename(TSRMLS_C) : "";
     const char* filename = (file_handle->opened_path) ? file_handle->opened_path : file_handle->filename;
     zend_set_compiled_filename(filename TSRMLS_CC);
 
