@@ -1,7 +1,7 @@
 php-decorators
 ==============
 
-![travis-ci.org](https://travis-ci.org/AterCattus/php-decorators.png?branch=master)
+[![Build Status](https://travis-ci.org/AterCattus/php-decorators.png)](https://travis-ci.org/AterCattus/php-decorators)
 
 The implementation of decorators in PHP
 
